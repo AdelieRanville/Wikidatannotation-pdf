@@ -173,6 +173,31 @@ One line per statement, in QuickStatements V1 format:
 Needs a modern browser with ES2017, `fetch`, `IntersectionObserver` and
 `localStorage`. The file also works when opened from your disk (`file://`).
 
+### Security
+- **Malicious PDFs.** pdf.js versions before 4.2.67 are affected by
+  CVE-2024-4367 (code execution when opening a crafted PDF). The app uses
+  pdf.js 3.11.174 with the documented workaround, `isEvalSupported: false`.
+  Still, open PDFs from sources you trust.
+- **Untrusted project files and stored data.** Everything read from an imported
+  project file or from browser storage goes through a strict validator
+  (`clean()`): only well-formed mentions and statements are kept, Wikidata ids
+  must match `Q…` / `P…` plus digits, dates must match the expected format, and
+  invalid entries are dropped (their number is reported). Ids and values are
+  checked again when the commands are generated, and escaped before being
+  shown. Only import project files you trust anyway, and read each batch
+  before running it in QuickStatements.
+- **Third-party script.** The pdf.js script tag has a Subresource Integrity
+  hash, so a modified file from the CDN is refused. The worker script, which
+  pdf.js loads itself, cannot carry a hash.
+- **Content security policy.** A policy in the page only allows scripts from
+  cdnjs, and network requests only to Wikidata and cdnjs. If PDFs fail to
+  display in your browser, remove the `Content-Security-Policy` line to test
+  whether it is the cause, and report it.
+- **New tab.** QuickStatements opens with `noopener` and `noreferrer`.
+- **Privacy.** The selected text is sent to Wikidata's search. Annotations,
+  including the selected text, are stored in your browser and in exported
+  project files, so be careful when sharing those files.
+
 ### Known technical caveats
 - The way QuickStatements accepts commands through the URL could not be
   confirmed in its current documentation, hence the clipboard fallback.

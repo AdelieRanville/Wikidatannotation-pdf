@@ -1,5 +1,6 @@
 <!DOCTYPE html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'unsafe-inline' https://cdnjs.cloudflare.com; worker-src blob: https://cdnjs.cloudflare.com; connect-src https://www.wikidata.org https://cdnjs.cloudflare.com data: blob:; style-src 'unsafe-inline'; img-src data: blob:; font-src data: blob:; base-uri 'none'; form-action 'none'">
 <title>PDF to Wikidata statements</title>
 <style>
 :root{--ink:#1c2430;--mu:#667085;--bd:#cfd6df;--bg:#eef1f5;--b:#1d4ed8;--item:#5b9bff66;--val:#3ccf8e66;--ar:#c2410c;font-family:system-ui,-apple-system,"Segoe UI",sans-serif}
@@ -74,23 +75,43 @@ aside h3{margin:6px 0 0;font-size:14px}
 <select id="vt"><option value="text">Text</option><option value="url">URL</option><option value="date">Date</option></select>
 <button id="useval">Add value</button></div>
 </div>
-<script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js" integrity="sha512-q+4liFwdPC/bNdhUpZx6aXDx/h77yEQtn4I1slHydcbZK34nLaR3cAeYSJshoxIOq3mjEf7xJE8YWIUHMn+oCQ==" crossorigin="anonymous" referrerpolicy="no-referrer"></script>
 <script>
 const $=s=>document.querySelector(s);let SC=1.4;
 pdfjsLib.GlobalWorkerOptions.workerSrc='https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
 let doc,fname='',fsize=0,zoomBusy=0,key='',pageEls=[],M=[],S=[],selM=null,selS=null,linking=null,uid=1,pop=null,cur=[],tmr,ab,cache=new Map(),rec=[];
 try{rec=JSON.parse(localStorage.wdrec||'[]')}catch(e){}
+rec=(Array.isArray(rec)?rec:[]).filter(r=>r&&/^P\d+$/.test(r.id)).map(r=>({id:r.id,label:String(r.label||r.id),description:String(r.description||'')}));
 const mm=id=>M.find(m=>m.id==id),esc=s=>String(s).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
 const first=()=>{const n=parseInt($('#first').value);return isNaN(n)?1:n};
 const mLabel=m=>m.kind=='item'?m.entity.label+' ('+m.entity.id+')':'“'+m.text+'”';
 function save(){if(!key)return;try{localStorage[key]=JSON.stringify({M,S,src:$('#src').value,first:$('#first').value})}catch(e){}}
-function load(){try{const d=JSON.parse(localStorage[key]);M=d.M;S=d.S;$('#src').value=d.src;$('#first').value=d.first}catch(e){M=[];S=[]}
+const DATE=/^\+\d{4}-\d\d-\d\dT00:00:00Z\/(9|10|11)$/,pn=v=>{const n=parseInt(v);return isNaN(n)?1:n};
+/* Validate untrusted data (project files, browser storage): keep only well-formed entries */
+function clean(m,s){
+ const num=v=>typeof v=='number'&&isFinite(v),str=v=>typeof v=='string'?v:'',seen=new Set();
+ const M2=(Array.isArray(m)?m:[]).map(x=>{
+  if(!x||!Number.isInteger(x.id)||seen.has(x.id)||!['item','text','url','date'].includes(x.kind)||!Array.isArray(x.parts))return null;
+  const parts=x.parts.map(p=>p&&Number.isInteger(p.page)&&Array.isArray(p.rects)?{page:p.page,
+   rects:p.rects.filter(r=>r&&[r.x,r.y,r.w,r.h].every(num)).map(r=>({x:r.x,y:r.y,w:r.w,h:r.h}))}:null).filter(p=>p&&p.rects.length);
+  if(!parts.length)return null;
+  const o={id:x.id,kind:x.kind,text:str(x.text),parts};
+  if(x.kind=='item'){if(!x.entity||!/^Q\d+$/.test(x.entity.id))return null;
+   o.entity={id:x.entity.id,label:str(x.entity.label)||x.entity.id,desc:str(x.entity.desc)}}
+  else{o.value=str(x.value);if(!o.value||(x.kind=='date'&&!DATE.test(o.value)))return null}
+  seen.add(x.id);return o}).filter(Boolean);
+ const ids=new Set(M2.map(x=>x.id)),kind=id=>(M2.find(x=>x.id==id)||{}).kind,sid=new Set();
+ const S2=(Array.isArray(s)?s:[]).map(x=>{
+  if(!x||!Number.isInteger(x.id)||sid.has(x.id)||!x.p||!/^P\d+$/.test(x.p.id)||kind(x.s)!='item'||!ids.has(x.o)||x.s==x.o)return null;
+  sid.add(x.id);return{id:x.id,s:x.s,o:x.o,p:{id:x.p.id,label:str(x.p.label)||x.p.id},pages:typeof x.pages=='string'?x.pages:null}}).filter(Boolean);
+ return[M2,S2]}
+function load(){try{const d=JSON.parse(localStorage[key]);[M,S]=clean(d.M,d.S);$('#src').value=typeof d.src=='string'?d.src:'';$('#first').value=pn(d.first)}catch(e){M=[];S=[]}
  uid=Math.max(0,...M.map(m=>m.id),...S.map(s=>s.id))+1;selM=selS=null}
 
 /* PDF */
 async function openPDF(f){
  $('#msg').textContent='Loading '+f.name+'…';
- try{doc=await pdfjsLib.getDocument({data:await f.arrayBuffer()}).promise}catch(e){$('#msg').textContent='This file could not be read as a PDF.';return}
+ try{doc=await pdfjsLib.getDocument({data:await f.arrayBuffer(),isEvalSupported:false}).promise}catch(e){$('#msg').textContent='This file could not be read as a PDF.';return}
  fname=f.name;fsize=f.size;key='wdann:'+f.name+':'+f.size;load();await renderAll();listS();bar();
  $('#msg').textContent=f.name+' — '+doc.numPages+' pages. Select text to start.'}
 async function renderAll(){
@@ -150,11 +171,11 @@ function showRes(d){
  cur=d;const R=$('#res');R.innerHTML='';
  if(!d.length){R.innerHTML='<div class="mu r">'+($('#q').value.trim()?'No match found.':(pop&&pop.prop?'Type to search properties.':''))+'</div>';return}
  d.forEach(r=>{const e=document.createElement('div');e.className='r';e.tabIndex=0;
-  e.innerHTML='<b>'+esc(r.label||r.id)+'</b> <span class="mu">'+r.id+'</span><small>'+esc(r.description||'')+'</small>';
+  e.innerHTML='<b>'+esc(r.label||r.id)+'</b> <span class="mu">'+esc(r.id)+'</span><small>'+esc(r.description||'')+'</small>';
   e.onclick=()=>pick(r);e.onkeydown=ev=>{if(ev.key=='Enter')pick(r)};R.appendChild(e)})}
 
 function pick(r){
- if(!pop)return;
+ if(!pop||!/^[QP]\d+$/.test(r.id))return;
  if(pop.prop){
   rec=[{id:r.id,label:r.label||r.id,description:r.description||''},...rec.filter(x=>x.id!=r.id)].slice(0,8);
   try{localStorage.wdrec=JSON.stringify(rec)}catch(e){}
@@ -219,7 +240,7 @@ function pagesOf(st){
 function listS(){
  const L=$('#stmts');L.innerHTML=S.length?'':'<div class="mu">No statements yet. Select a highlighted text, press “Link to…”, then click the target text.</div>';
  S.forEach(st=>{const d=document.createElement('div');d.className='st'+(st.id==selS?' on':'');
-  d.innerHTML='<div><b>'+esc(mLabel(mm(st.s)))+'</b> → <i>'+esc(st.p.label)+' ('+st.p.id+')</i> → <b>'+esc(mLabel(mm(st.o)))+'</b></div><div class="row"><span class="mu">Page(s)</span><input value="'+esc(pagesOf(st))+'" size="9"><button>Delete</button></div>';
+  d.innerHTML='<div><b>'+esc(mLabel(mm(st.s)))+'</b> → <i>'+esc(st.p.label)+' ('+esc(st.p.id)+')</i> → <b>'+esc(mLabel(mm(st.o)))+'</b></div><div class="row"><span class="mu">Page(s)</span><input value="'+esc(pagesOf(st))+'" size="9"><button>Delete</button></div>';
   d.onclick=()=>{selS=st.id;selM=null;paintHl();bar();listS();scrollTo(st)};
   const i=d.querySelector('input');i.onclick=e=>e.stopPropagation();i.onchange=()=>{st.pages=i.value.trim();save();out()};
   d.querySelector('button').onclick=e=>{e.stopPropagation();S=S.filter(x=>x!=st);save();paintHl();listS()};
@@ -227,7 +248,8 @@ function listS(){
 function cmds(sep){
  const src=$('#src').value.trim().toUpperCase(),ok=/^Q\d+$/.test(src),today=new Date().toISOString().slice(0,10),
   cl=v=>String(v).replace(/[|\t\r\n]+/g,' ').replace(/"/g,"'");
- return S.map(st=>{const s=mm(st.s),o=mm(st.o),
+ return S.filter(st=>{const s=mm(st.s),o=mm(st.o);
+  return s&&o&&s.entity&&/^Q\d+$/.test(s.entity.id)&&/^P\d+$/.test(st.p.id)&&(o.kind!='item'||/^Q\d+$/.test(o.entity.id))&&(o.kind!='date'||DATE.test(o.value))}).map(st=>{const s=mm(st.s),o=mm(st.o),
   t=o.kind=='item'?o.entity.id:o.kind=='date'?o.value:'"'+cl(o.value)+'"';
   return[s.entity.id,st.p.id,t,'S248',ok?src:'Q_SOURCE','S304','"'+cl(pagesOf(st))+'"','S813','+'+today+'T00:00:00Z/11'].join(sep)}).join('\n')}
 function out(){
@@ -244,7 +266,7 @@ $('#qs').onclick=()=>{
  if(!/^Q\d+$/.test($('#src').value.trim().toUpperCase())){$('#warn').textContent='Enter the source QID.';$('#src').focus();return}
  const o=$('#out');o.select();document.execCommand('copy');
  const u='https://quickstatements.toolforge.org/#/v1='+encodeURIComponent(cmds('\t'));
- window.open(u.length<7000?u:'https://quickstatements.toolforge.org/','_blank');
+ window.open(u.length<7000?u:'https://quickstatements.toolforge.org/','_blank','noopener,noreferrer');
  $('#msg').textContent='QuickStatements opened. The commands are also copied: paste them in if the page is empty.'};
 
 /* Zoom */
@@ -268,10 +290,13 @@ $('#imp').onchange=async e=>{
  let d;try{d=JSON.parse(await f.text());if(d.app!='pdf-to-wikidata'||!Array.isArray(d.M)||!Array.isArray(d.S))throw 0}
  catch(x){$('#msg').textContent='This file is not a valid project.';return}
  if(!doc){$('#msg').textContent='Open the PDF first, then import the project.';return}
- if((d.file!=fname||d.size!=fsize)&&!confirm('This project was made with “'+d.file+'”, which is not the open PDF. Import anyway?'))return;
+ if((d.file!=fname||d.size!=fsize)&&!confirm('This project was made with “'+String(d.file).slice(0,80)+'”, which is not the open PDF. Import anyway?'))return;
  if((M.length||S.length)&&!confirm('Replace the current annotations with the imported project?'))return;
- M=d.M;S=d.S;$('#src').value=d.src||'';$('#first').value=d.first||1;
+ const n0=d.M.length+d.S.length;[M,S]=clean(d.M,d.S);
+ $('#src').value=typeof d.src=='string'?d.src:'';$('#first').value=pn(d.first);
  uid=Math.max(0,...M.map(m=>m.id),...S.map(s=>s.id))+1;selM=selS=null;
- paintHl();bar();listS();save();$('#msg').textContent='Project imported.'};
+ paintHl();bar();listS();save();
+ const bad=n0-M.length-S.length;
+ $('#msg').textContent='Project imported ('+S.length+' statements)'+(bad>0?'; '+bad+' invalid entries were ignored.':'.')};
 listS();
 </script></body></html>

@@ -79,6 +79,21 @@ Rules:
 - **Export project / Import project** buttons to save and reopen an annotation
   project as a JSON file.
 
+## Security requirements
+- Open PDFs with pdf.js 3.11.174 or newer with `isEvalSupported: false`
+  (mitigation for CVE-2024-4367), or use pdf.js 4.2.67 or later.
+- Load third-party scripts with a pinned version and a Subresource Integrity
+  hash. Add a content security policy that only allows scripts from the CDN and
+  network requests to Wikidata and the CDN.
+- Treat project files and browser storage as untrusted: validate every
+  mention and statement, accept only `Q`/`P` ids followed by digits and
+  well-formed dates, drop invalid entries and report how many were ignored.
+- Re-validate ids and values when generating commands, neutralise separators and
+  line breaks in text values, and escape everything inserted into HTML.
+- Open external sites in a new tab with `noopener` and `noreferrer`.
+- Keep the selected text in saved projects and project files (owner's choice),
+  and say so in the documentation.
+
 ## Out of scope for the current version
 - Scanned PDFs (OCR)
 - Creating new Wikidata items
