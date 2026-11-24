@@ -1,4 +1,4 @@
-# PDF to Wikidata statements
+# Wikidata annotation for PDF 
 
 A single-file web app to annotate a PDF and turn your annotations into
 [QuickStatements](https://quickstatements.toolforge.org/) commands for Wikidata.
