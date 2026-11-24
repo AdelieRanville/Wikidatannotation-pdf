@@ -1,0 +1,277 @@
+<!DOCTYPE html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>PDF to Wikidata statements</title>
+<style>
+:root{--ink:#1c2430;--mu:#667085;--bd:#cfd6df;--bg:#eef1f5;--b:#1d4ed8;--item:#5b9bff66;--val:#3ccf8e66;--ar:#c2410c;font-family:system-ui,-apple-system,"Segoe UI",sans-serif}
+*{box-sizing:border-box}
+body{margin:0;height:100vh;display:flex;flex-direction:column;background:var(--bg);color:var(--ink);font-size:14px}
+header{display:flex;gap:14px;align-items:center;flex-wrap:wrap;padding:8px 12px;background:#fff;border-bottom:1px solid var(--bd)}
+label{display:flex;gap:6px;align-items:center}
+input,select,textarea,button{font:inherit;color:inherit}
+input,select,textarea{border:1px solid var(--bd);border-radius:6px;padding:4px 6px;background:#fff}
+button,.bt{border:1px solid var(--bd);background:#fff;border-radius:6px;padding:4px 10px;cursor:pointer}
+button.p,.bt.p{background:var(--b);border-color:var(--b);color:#fff}
+button:focus-visible,input:focus-visible,select:focus-visible{outline:2px solid var(--b);outline-offset:1px}
+.mu{color:var(--mu)}
+.zoom{display:flex;gap:6px;align-items:center}
+main{flex:1;display:flex;min-height:0}
+#viewer{flex:1;overflow:auto;padding:12px}
+#pages{position:relative;width:max-content;margin:0 auto}
+.page{position:relative;margin:0 auto 12px;background:#fff;box-shadow:0 1px 4px #0003}
+.page canvas{display:block}
+.textLayer{position:absolute;inset:0;overflow:hidden;line-height:1}
+.textLayer span{position:absolute;white-space:pre;color:transparent;cursor:text;transform-origin:0 0}
+.textLayer ::selection{background:#1d4ed855}
+.hls{position:absolute;inset:0;pointer-events:none}
+.hl{position:absolute;border-radius:2px;cursor:pointer;pointer-events:auto;mix-blend-mode:multiply}
+.hl.item{background:var(--item)}.hl.val{background:var(--val)}
+.hl.sel{outline:2px solid #f59e0b}
+body.linking .hl{cursor:crosshair}
+#arrows{position:absolute;left:0;top:0;pointer-events:none;overflow:visible;z-index:5}
+aside{width:370px;background:#fff;border-left:1px solid var(--bd);display:flex;flex-direction:column;min-height:0;padding:10px;gap:6px}
+aside h3{margin:6px 0 0;font-size:14px}
+#bar{min-height:34px;display:flex;gap:8px;align-items:center;justify-content:space-between}
+#stmts{flex:1;overflow:auto;display:flex;flex-direction:column;gap:6px}
+.st{border:1px solid var(--bd);border-radius:6px;padding:6px 8px;cursor:pointer}
+.st.on{border-color:var(--ar);background:#fff7ed}
+.row{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-top:4px}
+#out{height:130px;font-family:ui-monospace,Menlo,Consolas,monospace;font-size:12px;resize:vertical}
+#warn{color:#b42318}
+#pop{position:fixed;z-index:20;width:340px;background:#fff;border:1px solid var(--bd);border-radius:8px;box-shadow:0 8px 24px #0003;padding:10px}
+#pop[hidden]{display:none}
+#pop .row:first-child{justify-content:space-between;margin:0 0 6px}
+#q{width:100%}
+#res{max-height:250px;overflow:auto;margin-top:6px}
+.r{padding:5px 6px;border-radius:6px;cursor:pointer}
+.r:hover,.r:focus{background:#e8efff}
+.r small{display:block;color:var(--mu)}
+</style></head><body>
+<header>
+<label class="bt p">Open PDF<input id="file" type="file" accept="application/pdf" hidden></label>
+<label>Source QID <input id="src" placeholder="Q12345" size="10"></label>
+<label>First page number <input id="first" type="number" value="1" style="width:72px"></label>
+<span class="zoom"><button id="zo" aria-label="Zoom out">−</button><span id="zl">100%</span><button id="zi" aria-label="Zoom in">+</button></span>
+<span class="zoom"><button id="exp">Export project</button><label class="bt">Import project<input id="imp" type="file" accept=".json,application/json" hidden></label></span>
+<span id="msg" class="mu">Open a PDF, or drop one on this page, to start.</span>
+</header>
+<main>
+<div id="viewer"><div id="pages"><svg id="arrows"></svg></div></div>
+<aside>
+<div id="bar"><span id="sel" class="mu">Select text in the PDF to match it with a Wikidata item.</span>
+<span id="btns" hidden><button id="link" class="p">Link to…</button> <button id="del">Delete</button></span></div>
+<h3>Statements</h3>
+<div id="stmts"></div>
+<h3>QuickStatements commands</h3>
+<textarea id="out" readonly></textarea>
+<div class="row"><button id="copy" class="p">Copy commands</button><button id="qs">Open in QuickStatements</button><span id="warn"></span></div>
+</aside>
+</main>
+<div id="pop" hidden>
+<div class="row"><b id="pt"></b><button id="x" aria-label="Close">✕</button></div>
+<input id="q" autocomplete="off" placeholder="Search Wikidata">
+<div id="res"></div>
+<div id="vals" class="row"><span class="mu">Or use the text above as a value:</span>
+<select id="vt"><option value="text">Text</option><option value="url">URL</option><option value="date">Date</option></select>
+<button id="useval">Add value</button></div>
+</div>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
+<script>
+const $=s=>document.querySelector(s);let SC=1.4;
+pdfjsLib.GlobalWorkerOptions.workerSrc='https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
+let doc,fname='',fsize=0,zoomBusy=0,key='',pageEls=[],M=[],S=[],selM=null,selS=null,linking=null,uid=1,pop=null,cur=[],tmr,ab,cache=new Map(),rec=[];
+try{rec=JSON.parse(localStorage.wdrec||'[]')}catch(e){}
+const mm=id=>M.find(m=>m.id==id),esc=s=>String(s).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+const first=()=>{const n=parseInt($('#first').value);return isNaN(n)?1:n};
+const mLabel=m=>m.kind=='item'?m.entity.label+' ('+m.entity.id+')':'“'+m.text+'”';
+function save(){if(!key)return;try{localStorage[key]=JSON.stringify({M,S,src:$('#src').value,first:$('#first').value})}catch(e){}}
+function load(){try{const d=JSON.parse(localStorage[key]);M=d.M;S=d.S;$('#src').value=d.src;$('#first').value=d.first}catch(e){M=[];S=[]}
+ uid=Math.max(0,...M.map(m=>m.id),...S.map(s=>s.id))+1;selM=selS=null}
+
+/* PDF */
+async function openPDF(f){
+ $('#msg').textContent='Loading '+f.name+'…';
+ try{doc=await pdfjsLib.getDocument({data:await f.arrayBuffer()}).promise}catch(e){$('#msg').textContent='This file could not be read as a PDF.';return}
+ fname=f.name;fsize=f.size;key='wdann:'+f.name+':'+f.size;load();await renderAll();listS();bar();
+ $('#msg').textContent=f.name+' — '+doc.numPages+' pages. Select text to start.'}
+async function renderAll(){
+ const P=$('#pages');P.querySelectorAll('.page').forEach(e=>e.remove());pageEls=[];
+ const io=new IntersectionObserver(es=>es.forEach(e=>{if(e.isIntersecting&&!e.target._r){e.target._r=1;draw(e.target)}}),{root:$('#viewer'),rootMargin:'800px'});
+ for(let i=1;i<=doc.numPages;i++){
+  const pg=await doc.getPage(i),vp=pg.getViewport({scale:SC}),el=document.createElement('div');
+  el.className='page';el.style.width=vp.width+'px';el.style.height=vp.height+'px';
+  Object.assign(el,{_pg:pg,_vp:vp,_i:i-1});
+  el.innerHTML='<div class="textLayer"></div><div class="hls"></div>';
+  P.appendChild(el);pageEls.push(el);io.observe(el)}
+ paintHl()}
+async function draw(el){
+ const c=document.createElement('canvas'),vp=el._vp,r=devicePixelRatio||1;
+ c.width=vp.width*r;c.height=vp.height*r;c.style.width=vp.width+'px';c.style.height=vp.height+'px';el.prepend(c);
+ await el._pg.render({canvasContext:c.getContext('2d'),viewport:vp,transform:r!==1?[r,0,0,r,0,0]:null}).promise;
+ const tl=el.querySelector('.textLayer');tl.style.setProperty('--scale-factor',SC);
+ pdfjsLib.renderTextLayer({textContentSource:await el._pg.getTextContent(),container:tl,viewport:vp})}
+
+/* Selection -> match popup */
+$('#viewer').addEventListener('mouseup',e=>{
+ if(linking||e.target.closest('.hl')||e.target.closest('#pop'))return;
+ setTimeout(()=>{
+  const s=getSelection();if(!s.rangeCount||s.isCollapsed)return;
+  const rg=s.getRangeAt(0),t=s.toString().replace(/\s+/g,' ').trim(),parts={};
+  if(!t||!$('#pages').contains(rg.commonAncestorContainer))return;
+  [...rg.getClientRects()].forEach(r=>{
+   if(r.width<2||r.height<2||r.height>100)return;
+   const cx=r.left+r.width/2,cy=r.top+r.height/2;
+   pageEls.forEach(el=>{const b=el.getBoundingClientRect();
+    if(cx>=b.left&&cx<=b.right&&cy>=b.top&&cy<=b.bottom)(parts[el._i]=parts[el._i]||[]).push({x:(r.left-b.left)/SC,y:(r.top-b.top)/SC,w:r.width/SC,h:r.height/SC})})});
+  const ks=Object.keys(parts);if(!ks.length)return;
+  openPop({text:t,parts:ks.map(k=>({page:+k,rects:parts[k]}))},e.clientX,e.clientY)},0)});
+
+function openPop(ctx,x,y){
+ pop=ctx;const P=$('#pop');P.hidden=false;
+ P.style.left=Math.max(8,Math.min(x,innerWidth-350))+'px';P.style.top=Math.max(8,Math.min(y+12,innerHeight-420))+'px';
+ $('#pt').textContent=ctx.prop?'Choose the property':'Match to a Wikidata item';
+ $('#vals').hidden=!!ctx.prop;
+ const q=$('#q');q.value=ctx.prop?'':ctx.text;q.placeholder=ctx.prop?'Search properties':'Search Wikidata';q.focus();q.select();run()}
+function closePop(){pop=null;$('#pop').hidden=true}
+$('#x').onclick=()=>{closePop();getSelection().removeAllRanges()};
+$('#q').oninput=()=>{clearTimeout(tmr);tmr=setTimeout(run,250)};
+$('#q').onkeydown=e=>{if(e.key=='Enter'&&cur[0])pick(cur[0])};
+
+async function run(){
+ const q=$('#q').value.trim(),isP=!!(pop&&pop.prop),R=$('#res');
+ if(!q){showRes(isP?rec:[]);return}
+ const k=(isP?'P:':'I:')+q;let d=cache.get(k);
+ if(!d){
+  if(ab)ab.abort();ab=new AbortController();R.innerHTML='<div class="mu r">Searching…</div>';
+  try{const r=await fetch('https://www.wikidata.org/w/api.php?action=wbsearchentities&format=json&origin=*&language=en&uselang=en&limit=8&type='+(isP?'property':'item')+'&search='+encodeURIComponent(q),{signal:ab.signal});
+   d=(await r.json()).search||[];cache.set(k,d)}
+  catch(e){if(e.name!='AbortError')R.innerHTML='<div class="mu r">Search failed. Check your internet connection.</div>';return}}
+ showRes(d)}
+function showRes(d){
+ cur=d;const R=$('#res');R.innerHTML='';
+ if(!d.length){R.innerHTML='<div class="mu r">'+($('#q').value.trim()?'No match found.':(pop&&pop.prop?'Type to search properties.':''))+'</div>';return}
+ d.forEach(r=>{const e=document.createElement('div');e.className='r';e.tabIndex=0;
+  e.innerHTML='<b>'+esc(r.label||r.id)+'</b> <span class="mu">'+r.id+'</span><small>'+esc(r.description||'')+'</small>';
+  e.onclick=()=>pick(r);e.onkeydown=ev=>{if(ev.key=='Enter')pick(r)};R.appendChild(e)})}
+
+function pick(r){
+ if(!pop)return;
+ if(pop.prop){
+  rec=[{id:r.id,label:r.label||r.id,description:r.description||''},...rec.filter(x=>x.id!=r.id)].slice(0,8);
+  try{localStorage.wdrec=JSON.stringify(rec)}catch(e){}
+  const st={id:uid++,s:pop.src,p:{id:r.id,label:r.label||r.id},o:pop.tgt,pages:null};
+  S.push(st);selS=st.id;selM=null;closePop();paintHl();listS();bar();save();scrollTo(st);return}
+ addM({kind:'item',entity:{id:r.id,label:r.label||r.id,desc:r.description||''},text:pop.text,parts:pop.parts})}
+$('#useval').onclick=()=>{
+ if(!pop||pop.prop)return;const t=$('#vt').value,v=$('#q').value.trim();if(!v)return;let val=v;
+ if(t=='date'){val=parseDate(v);if(!val){alert('Date not recognised. Use YYYY, YYYY-MM or YYYY-MM-DD.');return}}
+ addM({kind:t,value:val,text:v,parts:pop.parts})};
+function parseDate(v){
+ const m=v.match(/^(\d{4})(?:-(\d{2}))?(?:-(\d{2}))?$/);
+ if(m)return '+'+m[1]+'-'+(m[2]||'00')+'-'+(m[3]||'00')+'T00:00:00Z/'+(m[3]?11:m[2]?10:9);
+ const d=new Date(v);if(isNaN(d)||!/\d{4}/.test(v))return null;
+ return '+'+d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0')+'T00:00:00Z/11'}
+function addM(m){m.id=uid++;M.push(m);selM=m.id;selS=null;closePop();getSelection().removeAllRanges();paintHl();bar();listS();save()}
+
+/* Highlights, selection, linking */
+function paintHl(){
+ pageEls.forEach(el=>el.querySelector('.hls').innerHTML='');
+ M.forEach(m=>m.parts.forEach(p=>{
+  const L=pageEls[p.page]&&pageEls[p.page].querySelector('.hls');if(!L)return;
+  p.rects.forEach(r=>{const d=document.createElement('div');
+   d.className='hl '+(m.kind=='item'?'item':'val')+(m.id==selM?' sel':'');
+   d.style.cssText='left:'+r.x*SC+'px;top:'+r.y*SC+'px;width:'+r.w*SC+'px;height:'+r.h*SC+'px';
+   d.title=mLabel(m);d.onclick=ev=>{ev.stopPropagation();clickM(m.id)};L.appendChild(d)})}));
+ arrows()}
+function clickM(id){
+ if(linking){if(id==linking)return;const src=linking;endLink();
+  openPop({prop:true,src:src,tgt:id},innerWidth/2-170,110);return}
+ selM=selM==id?null:id;selS=null;paintHl();bar();listS()}
+function bar(){
+ const m=mm(selM);$('#btns').hidden=!m;
+ $('#sel').textContent=m?mLabel(m):'Select text in the PDF to match it with a Wikidata item.';
+ $('#sel').className=m?'':'mu';$('#link').hidden=!m||m.kind!='item'}
+$('#link').onclick=()=>{linking=selM;document.body.classList.add('linking');$('#msg').textContent='Click the highlighted text this statement points to. Press Esc to cancel.'};
+function endLink(){linking=null;document.body.classList.remove('linking');$('#msg').textContent=doc?'Select text to continue.':''}
+$('#del').onclick=()=>{const id=selM;M=M.filter(m=>m.id!=id);S=S.filter(s=>s.s!=id&&s.o!=id);selM=null;paintHl();bar();listS();save()};
+addEventListener('keydown',e=>{if(e.key=='Escape'){endLink();closePop();selM=selS=null;paintHl();bar();listS()}});
+
+/* Arrows: only those touching the selected text or statement */
+function pos(m){const p=m.parts[0],r=p.rects[0],el=pageEls[p.page];if(!el)return null;
+ return{x:el.offsetLeft+(r.x+r.w/2)*SC,y:el.offsetTop+(r.y+r.h/2)*SC}}
+function arrows(){
+ const svg=$('#arrows'),P=$('#pages');svg.setAttribute('width',P.scrollWidth);svg.setAttribute('height',P.scrollHeight);
+ let h='<defs><marker id="ah" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0L10 5L0 10z" fill="#c2410c"/></marker></defs>';
+ S.filter(st=>st.s==selM||st.o==selM||st.id==selS).forEach(st=>{
+  const a=pos(mm(st.s)),b=pos(mm(st.o));if(!a||!b)return;
+  const dx=b.x-a.x,dy=b.y-a.y,len=Math.hypot(dx,dy)||1,k=Math.min(60,len*.25)/len,
+   c={x:(a.x+b.x)/2-dy*k,y:(a.y+b.y)/2+dx*k},m={x:.25*a.x+.5*c.x+.25*b.x,y:.25*a.y+.5*c.y+.25*b.y};
+  h+='<path d="M'+a.x+' '+a.y+'Q'+c.x+' '+c.y+' '+b.x+' '+b.y+'" fill="none" stroke="#c2410c" stroke-width="2.5" marker-end="url(#ah)"/>'+
+   '<text x="'+m.x+'" y="'+(m.y-5)+'" text-anchor="middle" font-size="13" font-weight="600" fill="#9a3412" stroke="#fff" stroke-width="4" paint-order="stroke">'+esc(st.p.label)+'</text>'});
+ svg.innerHTML=h}
+function scrollTo(st){const m=mm(st.s),p=m&&m.parts[0];if(!p||!pageEls[p.page])return;
+ $('#viewer').scrollTo({top:pageEls[p.page].offsetTop+p.rects[0].y*SC-120,behavior:'smooth'})}
+
+/* Statements list and QuickStatements output */
+function pagesOf(st){
+ if(st.pages!=null)return st.pages;
+ const ix=[...new Set([...mm(st.s).parts,...mm(st.o).parts].map(p=>p.page))].sort((a,b)=>a-b).map(i=>first()+i);
+ return ix.length>1&&ix.every((v,i)=>i==0||v==ix[i-1]+1)?ix[0]+'-'+ix[ix.length-1]:ix.join(', ')}
+function listS(){
+ const L=$('#stmts');L.innerHTML=S.length?'':'<div class="mu">No statements yet. Select a highlighted text, press “Link to…”, then click the target text.</div>';
+ S.forEach(st=>{const d=document.createElement('div');d.className='st'+(st.id==selS?' on':'');
+  d.innerHTML='<div><b>'+esc(mLabel(mm(st.s)))+'</b> → <i>'+esc(st.p.label)+' ('+st.p.id+')</i> → <b>'+esc(mLabel(mm(st.o)))+'</b></div><div class="row"><span class="mu">Page(s)</span><input value="'+esc(pagesOf(st))+'" size="9"><button>Delete</button></div>';
+  d.onclick=()=>{selS=st.id;selM=null;paintHl();bar();listS();scrollTo(st)};
+  const i=d.querySelector('input');i.onclick=e=>e.stopPropagation();i.onchange=()=>{st.pages=i.value.trim();save();out()};
+  d.querySelector('button').onclick=e=>{e.stopPropagation();S=S.filter(x=>x!=st);save();paintHl();listS()};
+  L.appendChild(d)});out()}
+function cmds(sep){
+ const src=$('#src').value.trim().toUpperCase(),ok=/^Q\d+$/.test(src),today=new Date().toISOString().slice(0,10),
+  cl=v=>String(v).replace(/[|\t\r\n]+/g,' ').replace(/"/g,"'");
+ return S.map(st=>{const s=mm(st.s),o=mm(st.o),
+  t=o.kind=='item'?o.entity.id:o.kind=='date'?o.value:'"'+cl(o.value)+'"';
+  return[s.entity.id,st.p.id,t,'S248',ok?src:'Q_SOURCE','S304','"'+cl(pagesOf(st))+'"','S813','+'+today+'T00:00:00Z/11'].join(sep)}).join('\n')}
+function out(){
+ $('#warn').textContent=/^Q\d+$/.test($('#src').value.trim().toUpperCase())?'':'Enter the source QID.';
+ $('#out').value=cmds('|')}
+$('#copy').onclick=()=>{const o=$('#out');o.select();document.execCommand('copy');$('#copy').textContent='Copied';setTimeout(()=>$('#copy').textContent='Copy commands',1200)};
+['src','first'].forEach(i=>$('#'+i).oninput=()=>{save();listS()});
+$('#file').onchange=e=>e.target.files[0]&&openPDF(e.target.files[0]);
+addEventListener('dragover',e=>e.preventDefault());
+addEventListener('drop',e=>{e.preventDefault();const f=e.dataTransfer.files[0];if(f&&/pdf$/i.test(f.type||f.name))openPDF(f)});
+/* Open in QuickStatements: commands go in the URL and are also copied as a fallback */
+$('#qs').onclick=()=>{
+ if(!S.length){$('#msg').textContent='Add a statement first.';return}
+ if(!/^Q\d+$/.test($('#src').value.trim().toUpperCase())){$('#warn').textContent='Enter the source QID.';$('#src').focus();return}
+ const o=$('#out');o.select();document.execCommand('copy');
+ const u='https://quickstatements.toolforge.org/#/v1='+encodeURIComponent(cmds('\t'));
+ window.open(u.length<7000?u:'https://quickstatements.toolforge.org/','_blank');
+ $('#msg').textContent='QuickStatements opened. The commands are also copied: paste them in if the page is empty.'};
+
+/* Zoom */
+async function zoom(f){
+ if(!doc||zoomBusy)return;zoomBusy=1;
+ try{const v=$('#viewer'),r=v.scrollTop/(v.scrollHeight||1);
+  SC=Math.min(3,Math.max(.6,+(SC*f).toFixed(3)));$('#zl').textContent=Math.round(SC/1.4*100)+'%';
+  await renderAll();v.scrollTop=r*v.scrollHeight}
+ finally{zoomBusy=0}}
+$('#zi').onclick=()=>zoom(1.2);$('#zo').onclick=()=>zoom(1/1.2);
+
+/* Project export / import */
+$('#exp').onclick=()=>{
+ if(!doc){$('#msg').textContent='Open a PDF first.';return}
+ const b=new Blob([JSON.stringify({app:'pdf-to-wikidata',v:1,file:fname,size:fsize,src:$('#src').value,first:$('#first').value,M,S})],{type:'application/json'}),
+  a=document.createElement('a');
+ a.href=URL.createObjectURL(b);a.download=(fname.replace(/\.pdf$/i,'')||'project')+'.wdproject.json';a.click();
+ setTimeout(()=>URL.revokeObjectURL(a.href),1000)};
+$('#imp').onchange=async e=>{
+ const f=e.target.files[0];e.target.value='';if(!f)return;
+ let d;try{d=JSON.parse(await f.text());if(d.app!='pdf-to-wikidata'||!Array.isArray(d.M)||!Array.isArray(d.S))throw 0}
+ catch(x){$('#msg').textContent='This file is not a valid project.';return}
+ if(!doc){$('#msg').textContent='Open the PDF first, then import the project.';return}
+ if((d.file!=fname||d.size!=fsize)&&!confirm('This project was made with “'+d.file+'”, which is not the open PDF. Import anyway?'))return;
+ if((M.length||S.length)&&!confirm('Replace the current annotations with the imported project?'))return;
+ M=d.M;S=d.S;$('#src').value=d.src||'';$('#first').value=d.first||1;
+ uid=Math.max(0,...M.map(m=>m.id),...S.map(s=>s.id))+1;selM=selS=null;
+ paintHl();bar();listS();save();$('#msg').textContent='Project imported.'};
+listS();
+</script></body></html>
